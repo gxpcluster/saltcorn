@@ -8,7 +8,7 @@ import renderBuilder = require("./builder");
 import mkTable = require("./table");
 import tabs = require("./tabs");
 import tags = require("./tags");
-const { a, text, div, button, hr, time, i } = tags;
+const { a, text, div, button, hr, time, i, input } = tags;
 import layoutUtils = require("./layout_utils");
 const { alert } = layoutUtils;
 
@@ -144,7 +144,7 @@ const post_dropdown_item = (
   confirm?: boolean,
   what?: string
 ): string => {
-  const id = href.split("/").join("");
+  const id = href.split("/").join("").split(" ").join("");
   return `<a class="dropdown-item" onclick="${
     confirm
       ? `if(confirm('${
@@ -250,6 +250,7 @@ export = {
   a,
   i,
   button,
+  input,
   hr,
   alert,
 };

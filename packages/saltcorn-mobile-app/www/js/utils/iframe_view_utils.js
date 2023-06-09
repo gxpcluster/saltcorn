@@ -1,5 +1,5 @@
 /*eslint-env browser*/
-/*global $, submitWithEmptyAction, is_paging_param, bootstrap, common_done, unique_field_from_rows*/
+/*global $, submitWithEmptyAction, is_paging_param, bootstrap, common_done, unique_field_from_rows, inline_submit_success*/
 
 function combineFormAndQuery(form, query) {
   let paramsList = [];
@@ -24,22 +24,65 @@ async function execLink(url) {
   await parent.handleRoute(`get${path}`, query);
 }
 
+async function execNavbarLink(url) {
+  $(".navbar-toggler").click();
+  execLink(url);
+}
+
 /**
  *
  * @param {*} e
  * @param {*} urlSuffix
  * @returns
  */
-async function formSubmit(e, urlSuffix, viewname) {
-  e.submit();
+async function formSubmit(e, urlSuffix, viewname, noSubmitCb) {
+  if (!noSubmitCb) e.submit();
   const files = {};
   const urlParams = new URLSearchParams();
   for (const entry of new FormData(e).entries()) {
     if (entry[1] instanceof File) files[entry[0]] = entry[1];
-    else urlParams.append(entry[0], entry[1]);
+    else {
+      // is there a hidden input with a filename?
+      const domEl = $(e).find(
+        `[name='${entry[0]}'][mobile-camera-input='true']`
+      );
+      if (domEl.length > 0) {
+        const tokens = entry[1].split("/");
+        const fileName = tokens[tokens.length - 1];
+        const directory = tokens.splice(0, tokens.length - 1).join("/");
+        // read and add file to submit
+        const binary = await parent.readBinary(fileName, directory);
+        files[entry[0]] = new File([binary], fileName);
+      } else urlParams.append(entry[0], entry[1]);
+    }
   }
   const queryStr = urlParams.toString();
   await parent.handleRoute(`post${urlSuffix}${viewname}`, queryStr, files);
+}
+
+async function inline_local_submit(e, opts1) {
+  try {
+    e.preventDefault();
+    const opts = JSON.parse(decodeURIComponent(opts1 || "") || "{}");
+    const form = $(e.target).closest("form");
+    const urlParams = new URLSearchParams();
+    for (const entry of new FormData(form[0]).entries()) {
+      urlParams.append(entry[0], entry[1]);
+    }
+    const url = form.attr("action");
+    await parent.router.resolve({
+      pathname: `post${url}`,
+      query: urlParams.toString(),
+    });
+    inline_submit_success(e, form, opts);
+  } catch (error) {
+    parent.showAlerts([
+      {
+        type: "error",
+        msg: error.message ? error.message : "An error occured.",
+      },
+    ]);
+  }
 }
 
 async function saveAndContinue(e, action, k) {
@@ -105,25 +148,36 @@ async function login(e, entryPoint, isSignup) {
     config.language = decodedJwt.user.language;
     config.isPublicUser = false;
     config.isOfflineMode = false;
+    await parent.insertUser({
+      id: config.user_id,
+      email: config.user_name,
+      role_id: config.role_id,
+      language: config.language,
+    });
     await parent.setJwt(loginResult);
     config.jwt = loginResult;
     await parent.i18next.changeLanguage(config.language);
     const alerts = [];
     if (config.allowOfflineMode) {
-      const userWithOfflineData = await parent.offlineHelper.lastOfflineUser();
-      if (!userWithOfflineData) await parent.offlineHelper.downloadServerData();
-      else {
-        if (userWithOfflineData === config.user_name) {
+      const { offlineUser, upload_started_at, upload_ended_at } =
+        (await parent.offlineHelper.getLastOfflineSession()) || {};
+      if (offlineUser === config.user_name) {
+        if (upload_started_at && !upload_ended_at) {
           alerts.push({
-            type: "info",
-            msg: "You have offline data, open the Sync menu to handle it.",
+            type: "warning",
+            msg: "Please check if your offline data is already online. An upload was started but did not finish.",
           });
         } else {
           alerts.push({
-            type: "warning",
-            msg: `'${userWithOfflineData}' has not yet uploaded offline data.`,
+            type: "info",
+            msg: "You have offline data, to handle it open the Network menu.",
           });
         }
+      } else if (offlineUser) {
+        alerts.push({
+          type: "warning",
+          msg: `'${offlineUser}' has not yet uploaded offline data.`,
+        });
       }
     }
     alerts.push({
@@ -361,21 +415,30 @@ async function mobile_modal(url, opts = {}) {
       mobileConfig.networkState === "none" &&
       mobileConfig.allowOfflineMode &&
       !mobileConfig.isOfflineMode
-    )
+    ) {
       await parent.offlineHelper.startOfflineMode();
-    const page = await parent.router.resolve({
-      pathname: `get${path}`,
-      query: query,
-      alerts: mobileConfig.isOfflineMode
-        ? [{ type: "info", msg: "You are in offline mode" }]
-        : [],
-    });
-    const modalContent = page.content;
-    const title = page.title;
-    if (title) $("#scmodal .modal-title").html(title);
-    $("#scmodal .modal-body").html(modalContent);
-    new bootstrap.Modal($("#scmodal")).show();
-    // onOpen onClose initialize_page?
+      parent.clearHistory();
+      await parent.gotoEntryView();
+    } else {
+      const page = await parent.router.resolve({
+        pathname: `get${path}`,
+        query: query,
+        alerts: mobileConfig.isOfflineMode
+          ? [
+              {
+                type: "info",
+                msg: parent.offlineHelper.getOfflineMsg(),
+              },
+            ]
+          : [],
+      });
+      const modalContent = page.content;
+      const title = page.title;
+      if (title) $("#scmodal .modal-title").html(title);
+      $("#scmodal .modal-body").html(modalContent);
+      new bootstrap.Modal($("#scmodal")).show();
+      // onOpen onClose initialize_page?
+    }
   } catch (error) {
     parent.showAlerts([
       {
@@ -524,63 +587,169 @@ async function view_post(viewname, route, data, onDone) {
   }
 }
 
-async function callUploadSync() {
-  if (!(await parent.offlineHelper.lastOfflineUser())) {
+function setNetworSwitcherOn() {
+  $("#networkModeSwitcherId").prop("checked", true);
+  $("#onlineDescId").prop("class", "d-block");
+  $("#offlineDescId").prop("class", "d-none");
+}
+
+function setNetworkSwitcherOff() {
+  $("#networkModeSwitcherId").prop("checked", false);
+  $("#onlineDescId").prop("class", "d-none");
+  $("#offlineDescId").prop("class", "d-block");
+}
+
+async function switchNetworkMode() {
+  try {
+    const state = parent.saltcorn.data.state.getState();
+    const { isOfflineMode, networkState } = state.mobileConfig;
+    if (!isOfflineMode) {
+      await parent.offlineHelper.startOfflineMode();
+      parent.clearHistory();
+      parent.addRoute({ route: "/" });
+      parent.addRoute({ route: "get/sync/sync_settings" });
+      parent.showAlerts([
+        {
+          type: "info",
+          msg: parent.offlineHelper.getOfflineMsg(),
+        },
+      ]);
+    } else {
+      if (networkState === "none")
+        throw new Error("No internet connection is available.");
+      await parent.offlineHelper.endOfflineMode();
+      parent.clearHistory();
+      parent.addRoute({ route: "/" });
+      parent.addRoute({ route: "get/sync/sync_settings" });
+      parent.showAlerts([
+        {
+          type: "info",
+          msg: "You are online again.",
+        },
+      ]);
+    }
+  } catch (error) {
+    parent.showAlerts([
+      {
+        type: "error",
+        msg: `Unable to change the network mode: ${
+          error.message ? error.message : "Unknown error"
+        }`,
+      },
+    ]);
+  } finally {
+    const { isOfflineMode } =
+      parent.saltcorn.data.state.getState().mobileConfig;
+    if (isOfflineMode) setNetworkSwitcherOff();
+    else setNetworSwitcherOn();
+  }
+}
+
+async function callUpload(force = false) {
+  const lastOfflineSession = await parent.offlineHelper.getLastOfflineSession();
+  const mobileConfig = parent.saltcorn.data.state.getState().mobileConfig;
+  if (!lastOfflineSession?.offlineUser) {
     parent.showAlerts([
       {
         type: "error",
         msg: "You don't have any offline data.",
       },
     ]);
+  } else if (mobileConfig.networkState === "none") {
+    parent.showAlerts([
+      {
+        type: "error",
+        msg: "You don't have an internet connection.",
+      },
+    ]);
   } else {
-    showLoadSpinner();
-    try {
-      await parent.offlineHelper.uploadLocalData();
-      await parent.offlineHelper.endOfflineMode();
-      parent.clearAlerts();
-      parent.showAlerts([
-        {
-          type: "info",
-          msg: "Sucessfully uploaded your local data.",
-        },
-      ]);
-    } catch (error) {
-      parent.errorAlert(error);
-    } finally {
-      removeLoadSpinner();
+    if (
+      !force &&
+      lastOfflineSession.upload_started_at &&
+      !lastOfflineSession.upload_ended_at
+    ) {
+      await mobile_modal("/sync/ask_upload_not_ended");
+    } else {
+      const wasOffline = mobileConfig.isOfflineMode;
+      try {
+        showLoadSpinner();
+        mobileConfig.inLoadState = true;
+        await parent.offlineHelper.setUploadStartedTime(new Date());
+        await parent.offlineHelper.uploadLocalData();
+        await parent.offlineHelper.clearLocalData();
+        await parent.offlineHelper.setUploadFinishedTime(new Date());
+        await parent.offlineHelper.endOfflineMode();
+        parent.clearHistory();
+        parent.addRoute({ route: "/" });
+        parent.addRoute({ route: "get/sync/sync_settings" });
+        parent.clearAlerts();
+        if (!wasOffline) {
+          parent.showAlerts([
+            {
+              type: "info",
+              msg: "Uploaded your offline data.",
+            },
+          ]);
+        } else if (wasOffline) {
+          setNetworSwitcherOn();
+          parent.showAlerts([
+            {
+              type: "info",
+              msg: "Uploaded your offline data, you are online again.",
+            },
+          ]);
+        }
+      } catch (error) {
+        await parent.offlineHelper.setUploadFinishedTime(null);
+        parent.errorAlert(error);
+      } finally {
+        mobileConfig.inLoadState = false;
+        removeLoadSpinner();
+      }
     }
   }
 }
 
-async function callDownloadSync(force = false) {
-  const lastOfflineUser = await parent.offlineHelper.lastOfflineUser();
+async function deleteOfflineDataClicked() {
+  const lastOfflineSession = await parent.offlineHelper.getLastOfflineSession();
   const { user_name } = parent.saltcorn.data.state.getState().mobileConfig;
-  if (lastOfflineUser === user_name && !force) {
-    await mobile_modal("/sync/ask_overwrite");
-  } else if (lastOfflineUser && !force) {
+  if (!lastOfflineSession?.offlineUser) {
     parent.showAlerts([
       {
         type: "error",
-        msg: `The user '${lastOfflineUser}' has offline data, the download is not available.`,
+        msg: "You don't have any offline data.",
+      },
+    ]);
+  } else if (lastOfflineSession.offlineUser !== user_name) {
+    parent.showAlerts([
+      {
+        type: "error",
+        msg: `The offline data is owned by '${lastOfflineSession.offlineUser}'.`,
       },
     ]);
   } else {
+    mobile_modal("/sync/ask_delete_offline_data");
+  }
+}
+
+async function deleteOfflineData() {
+  const mobileConfig = parent.saltcorn.data.state.getState().mobileConfig;
+  try {
+    mobileConfig.inLoadState = true;
     showLoadSpinner();
-    try {
-      await parent.offlineHelper.downloadServerData();
-      await parent.offlineHelper.endOfflineMode();
-      parent.clearAlerts();
-      parent.showAlerts([
-        {
-          type: "info",
-          msg: "Sucessfully updated your local data.",
-        },
-      ]);
-    } catch (error) {
-      parent.errorAlert(error);
-    } finally {
-      removeLoadSpinner();
-    }
+    await parent.offlineHelper.clearLocalData();
+    await parent.offlineHelper.setOfflineSession(null);
+    parent.showAlerts([
+      {
+        type: "info",
+        msg: "Deleted your offline data.",
+      },
+    ]);
+  } catch (error) {
+    parent.errorAlert(error);
+  } finally {
+    mobileConfig.inLoadState = false;
+    removeLoadSpinner();
   }
 }
 
@@ -613,6 +782,48 @@ function showLoadSpinner() {
 
 function removeLoadSpinner() {
   $("#scspinner").remove();
+}
+
+/**
+ * is called when an input with capture=camera is used
+ * It takes a picture with the camera plugin, saves the file, and adds the filename as a hidden input.
+ * @param {*} fieldName
+ */
+async function getPicture(fieldName) {
+  const cameraOptions = {
+    quality: 50,
+    encodingType: parent.Camera.EncodingType.JPEG,
+    destinationType: parent.Camera.DestinationType.FILE_URI,
+  };
+  const getPictureWithPromise = () => {
+    return new Promise((resolve, reject) => {
+      parent.navigator.camera.getPicture(
+        (imageDate) => {
+          return resolve(imageDate);
+        },
+        (message) => {
+          return reject(message);
+        },
+        cameraOptions
+      );
+    });
+  };
+  try {
+    const form = $(`#cptbtn${fieldName}`).closest("form");
+    const onsubmit = form.attr("onsubmit");
+    form.attr("onsubmit", "javascript:void(0)");
+    const fileURI = await getPictureWithPromise();
+    form.attr("onsubmit", onsubmit);
+    const inputId = `input${fieldName}`;
+    form.find(`#${inputId}`).remove();
+    form.append(
+      `<input class="d-none" id="${inputId}" name="${fieldName}" value="${fileURI}" mobile-camera-input="true" />`
+    );
+    const tokens = fileURI.split("/");
+    $(`#cpt-file-name-${fieldName}`).text(tokens[tokens.length - 1]);
+  } catch (error) {
+    parent.errorAlert(error);
+  }
 }
 
 function reload_on_init() {

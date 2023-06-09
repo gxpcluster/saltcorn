@@ -11,6 +11,7 @@ const Table = require("@saltcorn/data/models/table");
 const File = require("@saltcorn/data/models/file");
 const View = require("@saltcorn/data/models/view");
 const User = require("@saltcorn/data/models/user");
+const Trigger = require("@saltcorn/data/models/trigger");
 const {
   mkTable,
   renderForm,
@@ -72,7 +73,7 @@ module.exports = router;
  * @returns {Promise<Form>}
  */
 const tableForm = async (table, req) => {
-  const fields = await table.getFields();
+  const fields = table.getFields();
   const roleOptions = (await User.get_roles()).map((r) => ({
     value: r.id,
     label: r.role,
@@ -433,7 +434,7 @@ router.get(
     const tables = await Table.find_with_external({}, { orderBy: "name" });
     const edges = [];
     for (const table of tables) {
-      const fields = await table.getFields();
+      const fields = table.getFields();
       for (const field of fields) {
         if (field.reftable_name)
           edges.push({
@@ -563,9 +564,9 @@ router.get(
     const { idorname } = req.params;
     let id = parseInt(idorname);
     let table;
-    if (id) table = Table.findOne({ id });
+    if (id) [table] = await Table.find({ id });
     else {
-      table = Table.findOne({ name: idorname });
+      [table] = await Table.find({ name: idorname });
     }
 
     if (!table) {
@@ -574,11 +575,12 @@ router.get(
       return;
     }
     const nrows = await table.countRows();
-    const fields = await table.getFields();
+    const fields = table.getFields();
     const { child_relations } = await table.get_child_relations();
     const inbound_refs = [
       ...new Set(child_relations.map(({ table }) => table.name)),
     ];
+    const triggers = table.id ? Trigger.find({ table_id: table.id }) : [];
     let fieldCard;
     if (fields.length === 0) {
       fieldCard = [
@@ -645,6 +647,13 @@ router.get(
         inbound_refs.length > 0
           ? req.__("Inbound keys: ") +
             inbound_refs.map((tnm) => link(`/table/${tnm}`, tnm)).join(", ") +
+            "<br>"
+          : "",
+        triggers.length
+          ? req.__("Table triggers: ") +
+            triggers
+              .map((t) => link(`/actions/configure/${t.id}`, t.name))
+              .join(", ") +
             "<br>"
           : "",
         !table.external &&
@@ -911,12 +920,10 @@ router.post(
         rest.provider_name !== "Database table"
       ) {
         const table = await Table.create(name, rest);
-        await sleep(500); // Allow other workers to load this view
         res.redirect(`/table/provider-cfg/${table.id}`);
       } else {
         delete rest.provider_name;
         const table = await Table.create(name, rest);
-        await sleep(500); // Allow other workers to load this view
         req.flash("success", req.__(`Table %s created`, name));
         res.redirect(`/table/${table.id}`);
       }
@@ -924,7 +931,7 @@ router.post(
       // todo check that works after where change
       // todo findOne can be have parameter for external table here
       //we can only save min role
-      const table = await Table.findOne({ name: v.name });
+      const table = Table.findOne({ name: v.name });
       if (table) {
         const exttables_min_role_read = getState().getConfigCopy(
           "exttables_min_role_read",
@@ -942,7 +949,7 @@ router.post(
       }
     } else {
       const { id, _csrf, ...rest } = v;
-      const table = await Table.findOne({ id: parseInt(id) });
+      const table = Table.findOne({ id: parseInt(id) });
       const old_versioned = table.versioned;
       let hasError = false;
       let notify = "";
@@ -994,7 +1001,7 @@ router.post(
   isAdmin,
   error_catcher(async (req, res) => {
     const { id } = req.params;
-    const t = await Table.findOne({ id });
+    const t = Table.findOne({ id });
     if (!t) {
       req.flash("error", `Table not found`);
       res.redirect(`/table`);
@@ -1020,7 +1027,7 @@ router.post(
   isAdmin,
   error_catcher(async (req, res) => {
     const { id } = req.params;
-    const t = await Table.findOne({ id });
+    const t = Table.findOne({ id });
     if (!t) {
       req.flash("error", `Table not found`);
       res.redirect(`/table`);
@@ -1126,7 +1133,7 @@ router.get(
   isAdmin,
   error_catcher(async (req, res) => {
     const { name } = req.params;
-    const table = await Table.findOne({ name });
+    const table = Table.findOne({ name });
     const rows = await table.getRows();
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", `attachment; filename="${name}.csv"`);
@@ -1155,7 +1162,7 @@ router.get(
   isAdmin,
   error_catcher(async (req, res) => {
     const { id } = req.params;
-    const table = await Table.findOne({ id });
+    const table = Table.findOne({ id });
     if (!table) {
       req.flash("error", `Table not found`);
       res.redirect(`/table`);
@@ -1295,13 +1302,13 @@ router.get(
   isAdmin,
   error_catcher(async (req, res) => {
     const { id, type } = req.params;
-    const table = await Table.findOne({ id });
+    const table = Table.findOne({ id });
     if (!table) {
       req.flash("error", `Table not found`);
       res.redirect(`/table`);
       return;
     }
-    const fields = await table.getFields();
+    const fields = table.getFields();
     const form = constraintForm(req, table.id, fields, type);
     res.sendWrap(req.__(`Add constraint to %s`, table.name), {
       above: [
@@ -1339,13 +1346,13 @@ router.post(
   isAdmin,
   error_catcher(async (req, res) => {
     const { id, type } = req.params;
-    const table = await Table.findOne({ id });
+    const table = Table.findOne({ id });
     if (!table) {
       req.flash("error", `Table not found`);
       res.redirect(`/table`);
       return;
     }
-    const fields = await table.getFields();
+    const fields = table.getFields();
     const form = constraintForm(req, table.id, fields, type);
     form.validate(req.body);
     if (form.hasErrors) req.flash("error", req.__("An error occurred"));
@@ -1397,7 +1404,7 @@ router.get(
   isAdmin,
   error_catcher(async (req, res) => {
     const { id } = req.params;
-    const table = await Table.findOne({ id });
+    const table = Table.findOne({ id });
 
     const form = renameForm(table.id, req);
     res.sendWrap(req.__(`Rename table %s`, table.name), {
@@ -1434,7 +1441,7 @@ router.post(
   isAdmin,
   error_catcher(async (req, res) => {
     const { id } = req.params;
-    const table = await Table.findOne({ id });
+    const table = Table.findOne({ id });
     const form = renameForm(table.id, req);
 
     form.validate(req.body);
@@ -1560,7 +1567,7 @@ router.post(
   isAdmin,
   error_catcher(async (req, res) => {
     const { name } = req.params;
-    const table = await Table.findOne({ name });
+    const table = Table.findOne({ name });
     if (!req.files || !req.files.file) {
       req.flash("error", "Missing file");
       res.redirect(`/table/${table.id}`);
@@ -1579,7 +1586,7 @@ router.get(
   isAdmin,
   error_catcher(async (req, res) => {
     const { name, filename } = req.params;
-    const table = await Table.findOne({ name });
+    const table = Table.findOne({ name });
     const f = await File.findOne(filename);
     await previewCSV({ newPath: f.location, table, res, req, full: true });
   })
@@ -1590,7 +1597,7 @@ router.post(
   isAdmin,
   error_catcher(async (req, res) => {
     const { name, filename } = req.params;
-    const table = await Table.findOne({ name });
+    const table = Table.findOne({ name });
     const f = await File.findOne(filename);
 
     try {
@@ -1619,7 +1626,7 @@ router.post(
   isAdmin,
   error_catcher(async (req, res) => {
     const { name } = req.params;
-    const table = await Table.findOne({ name });
+    const table = Table.findOne({ name });
 
     try {
       await table.deleteRows({});
@@ -1644,7 +1651,7 @@ router.post(
   isAdmin,
   error_catcher(async (req, res) => {
     const { name } = req.params;
-    const table = await Table.findOne({ name });
+    const table = Table.findOne({ name });
     if (!table) {
       req.flash("error", `Table not found: ${text(name)}`);
       res.redirect(`/table`);
@@ -1737,7 +1744,7 @@ router.get(
     const { id } = req.params;
     const { step } = req.query;
 
-    const table = await Table.findOne({ id });
+    const table = Table.findOne({ id });
     if (!table) {
       req.flash("error", `Table not found`);
       res.redirect(`/table`);
@@ -1763,7 +1770,7 @@ router.post(
     const { id } = req.params;
     const { step } = req.query;
 
-    const table = await Table.findOne({ id });
+    const table = Table.findOne({ id });
     if (!table) {
       req.flash("error", `Table not found`);
       res.redirect(`/table`);

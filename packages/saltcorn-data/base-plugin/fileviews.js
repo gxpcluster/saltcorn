@@ -10,7 +10,10 @@ const {
   domReady,
   select,
   input,
+  button,
+  i,
   div,
+  span,
   text,
   text_attr,
 } = require("@saltcorn/markup/tags");
@@ -163,6 +166,57 @@ module.exports = {
           (attrs || {}).neutral_label
         )
       );
+    },
+  },
+  // Capture
+  Capture: {
+    isEdit: true,
+    multipartFormData: true,
+    valueIsFilename: true,
+
+    configFields: async () => {
+      const dirs = await File.allDirectories();
+      return [
+        {
+          name: "folder",
+          label: "Folder",
+          type: "String",
+          attributes: { options: dirs.map((d) => d.path_to_serve) },
+        },
+        {
+          name: "device",
+          label: "Device",
+          type: "String",
+          required: true,
+          attributes: { options: ["camera", "camcorder", "microphone"] },
+        },
+      ];
+    },
+    run: (nm, file_name, attrs, cls, reqd, field) => {
+      if (attrs.device === "camera" && attrs.isMobile) {
+        return div(
+          { class: "text-nowrap overflow-hidden text-truncate" },
+          button(
+            {
+              id: `cptbtn${text_attr(nm)}`,
+              class: "btn btn-primary",
+              onclick: `getPicture('${text_attr(nm)}')`,
+            },
+            "use camera",
+            i({ class: "ms-2 fas fa-camera" })
+          ),
+          span({ class: "ms-2", id: `cpt-file-name-${text_attr(nm)}` }, "")
+        );
+      } else {
+        return input({
+          class: `${cls} ${field.class || ""}`,
+          "data-fieldname": field.form_name,
+          name: text_attr(nm),
+          id: `input${text_attr(nm)}`,
+          type: "file",
+          accept: `image/*;capture=${attrs.device}`,
+        });
+      }
     },
   },
   // Thumbnail
