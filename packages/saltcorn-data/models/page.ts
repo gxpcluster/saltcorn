@@ -7,15 +7,11 @@
 import db from "../db";
 import View from "./view";
 import Table from "./table";
+import File from "./file";
+import { readFile } from "fs/promises";
 import layout from "./layout";
-const {
-  eachView,
-  eachPage,
-  traverse,
-  traverseSync,
-  getStringsForI18n,
-  translateLayout,
-} = layout;
+const { eachView, eachPage, traverse, getStringsForI18n, translateLayout } =
+  layout;
 import config from "./config";
 import type {
   Layout,
@@ -51,7 +47,6 @@ const {
   objectToQueryString,
 } = utils;
 import { AbstractTag } from "@saltcorn/types/model-abstracts/abstract_tag";
-import Crash from "./crash";
 
 /**
  * Page Class
@@ -323,6 +318,29 @@ class Page implements AbstractPage {
           segment.url +=
             (segment.transfer_state ? "" : `?`) +
             objectToQueryString(extra_state || {});
+        }
+      },
+      image: async (segment) => {
+        if (extraArgs.req.isSplashPage) {
+          try {
+            if (segment.srctype === "File") {
+              const file = await File.findOne(segment.fileid);
+              if (file) {
+                const base64 = await readFile(file.location, "base64");
+                segment.encoded_image = `data:${file.mimetype};base64, ${base64}`;
+              } else
+                throw new Error(`The file '${segment.fileid}' does not exist.`);
+            }
+          } catch (error: any) {
+            segment.encoded_image = "invalid";
+            // was started from the build-app command
+            // console.log() is redirected into a logfile
+            console.log(
+              `Unable to encode the image: ${
+                error.message ? error.message : "Unknown error"
+              }`
+            );
+          }
         }
       },
     });

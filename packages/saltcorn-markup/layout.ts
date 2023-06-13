@@ -222,14 +222,16 @@ const render = ({
           ? srctype === "File"
             ? `/files/serve/${encodeURIComponent(segment.fileid)}`
             : segment.url
-          : undefined,
+          : segment.encoded_image
+          ? segment.encoded_image
+          : segment.url,
         id: elementId,
       });
       return wrap(
         segment,
         isTop,
         ix,
-        isWeb
+        isWeb || segment.encoded_image || segment.url
           ? image
           : div(
               image,
