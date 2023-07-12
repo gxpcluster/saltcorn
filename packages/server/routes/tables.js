@@ -41,6 +41,7 @@ const {
   script,
   domReady,
   code,
+  pre,
 } = require("@saltcorn/markup/tags");
 const stringify = require("csv-stringify");
 const TableConstraint = require("@saltcorn/data/models/table_constraints");
@@ -1134,14 +1135,29 @@ router.get(
   error_catcher(async (req, res) => {
     const { name } = req.params;
     const table = Table.findOne({ name });
-    const rows = await table.getRows();
+    const rows = await table.getRows({}, { orderBy: "id" });
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", `attachment; filename="${name}.csv"`);
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Pragma", "no-cache");
-
+    const columns = table.fields.sort((a, b) => a.id - b.id).map((f) => f.name);
+    for (const field of table.fields) {
+      if (field.type?.name === "JSON" && field.attributes?.hasSchema) {
+        (field.attributes?.schema || []).forEach((s) => {
+          columns.push(`${field.name}.${s.key}`);
+        });
+        columns.splice(columns.indexOf(field.name), 1);
+        for (const row of rows) {
+          Object.keys(row[field.name] || {}).forEach((k) => {
+            row[`${field.name}.${k}`] = row[field.name][k];
+          });
+          delete row[field.name];
+        }
+      }
+    }
     stringify(rows, {
       header: true,
+      columns,
       cast: {
         date: (value) => value.toISOString(),
         boolean: (v) => (v ? "true" : "false"),
@@ -1534,7 +1550,13 @@ const previewCSV = async ({ newPath, table, req, res, full }) => {
           title: req.__(`Preview`),
           contents: div(
             mkTable(
-              table.fields.map((f) => ({ label: f.name, key: f.name })),
+              table.fields.map((f) => ({
+                label: f.name,
+                key:
+                  f.type?.name === "JSON"
+                    ? (r) => JSON.stringify(r[f.name])
+                    : f.name,
+              })),
               full ? rows : rows.slice(0, 10)
             ),
             !full &&
@@ -1549,6 +1571,15 @@ const previewCSV = async ({ newPath, table, req, res, full }) => {
               )
           ),
         },
+        ...(parse_res.details
+          ? [
+              {
+                type: "card",
+                title: req.__(`Details`),
+                contents: pre(parse_res.details),
+              },
+            ]
+          : []),
       ],
     });
   }

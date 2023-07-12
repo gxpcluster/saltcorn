@@ -454,11 +454,11 @@ const fieldFlow = (req) =>
                 required: true,
                 attributes: {
                   explainers: {
-                    Fail: "Prevent any deletion of parent rows",
+                    Fail: req.__("Prevent any deletion of parent rows"),
                     Cascade:
-                      "If the parent row is deleted, automatically delete the child rows.",
+                        req.__("If the parent row is deleted, automatically delete the child rows."),
                     "Set null":
-                      "If the parent row is deleted, set key fields on child rows to null",
+                        req.__("If the parent row is deleted, set key fields on child rows to null"),
                   },
                 },
                 sublabel: req.__(
@@ -1028,7 +1028,7 @@ router.post(
       return;
     }
 
-    const field = await table.getField(fieldName);
+    const field = table.getField(fieldName);
 
     const fieldViewConfigForms = await calcfldViewConfig([field], false, 0);
     const formFields = fieldViewConfigForms[field.name][fv_name];
