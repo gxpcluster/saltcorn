@@ -11,6 +11,7 @@ const Table = require("@saltcorn/data/models/table");
 const File = require("@saltcorn/data/models/file");
 const View = require("@saltcorn/data/models/view");
 const User = require("@saltcorn/data/models/user");
+const Model = require("@saltcorn/data/models/model");
 const Trigger = require("@saltcorn/data/models/trigger");
 const {
   mkTable,
@@ -42,6 +43,7 @@ const {
   domReady,
   code,
   pre,
+  button,
 } = require("@saltcorn/markup/tags");
 const stringify = require("csv-stringify");
 const TableConstraint = require("@saltcorn/data/models/table_constraints");
@@ -53,9 +55,12 @@ const {
 } = require("@saltcorn/data/models/discovery");
 const { getState } = require("@saltcorn/data/db/state");
 const { cardHeaderTabs } = require("@saltcorn/markup/layout_utils");
-const { tablesList } = require("./common_lists");
-const { InvalidConfiguration } = require("@saltcorn/data/utils");
-const { sleep } = require("@saltcorn/data/utils");
+const { tablesList, viewsList } = require("./common_lists");
+const {
+  InvalidConfiguration,
+  removeAllWhiteSpace,
+} = require("@saltcorn/data/utils");
+const { EOL } = require("os");
 
 const path = require("path");
 /**
@@ -421,6 +426,101 @@ router.post(
   })
 );
 
+const indentString = (str, indent) => `${" ".repeat(indent)}${str}`;
+
+const srcCardinality = (field) => (field.required ? "||" : "|o");
+
+const buildTableMarkup = (table) => {
+  const fields = table.getFields();
+  const members = fields
+    // .filter((f) => !f.reftable_name)
+    .map((f) =>
+      indentString(`${removeAllWhiteSpace(f.type_name)} ${f.name}`, 6)
+    )
+    .join(EOL);
+  const keys = table
+    .getForeignKeys()
+    .map((f) =>
+      indentString(
+        `"${table.name}"${srcCardinality(f)}--|| "${f.reftable_name}" : "${
+          f.name
+        }"`,
+        2
+      )
+    )
+    .join(EOL);
+  return `${keys}
+  "${table.name}" {${EOL}${members}${EOL}  }`;
+};
+
+const buildMermaidMarkup = (tables) => {
+  const lines = tables.map((table) => buildTableMarkup(table)).join(EOL);
+  return `${indentString("erDiagram", 2)}${EOL}${lines}`;
+};
+
+const navigationPanel = () =>
+  div(
+    { class: "er-navigation-panel" },
+    button(
+      {
+        class: "btn btn-primary er-up",
+        onclick: "erHelper.translateY(100)",
+      },
+      i({ class: "fas fa-chevron-up" })
+    ),
+    button(
+      {
+        class: "btn btn-primary er-zoom-in",
+        onclick: "erHelper.zoom(0.1)",
+      },
+      i({ class: "fas fa-search-plus" })
+    ),
+    button(
+      {
+        class: "btn btn-primary er-left",
+        onclick: "erHelper.translateX(100)",
+      },
+      i({ class: "fas fa-chevron-left" })
+    ),
+    button(
+      { class: "btn btn-primary er-reset", onclick: "erHelper.reset()" },
+      i({ class: "fas fa-sync-alt" })
+    ),
+    button(
+      {
+        class: "btn btn-primary er-right",
+        onclick: "erHelper.translateX(-100)",
+      },
+      i({ class: "fas fa-chevron-right" })
+    ),
+    button(
+      {
+        class: "btn btn-primary er-down",
+        onclick: "erHelper.translateY(-100)",
+      },
+      i({ class: "fas fa-chevron-down" })
+    ),
+    button(
+      {
+        class: "btn btn-primary er-zoom-out",
+        onclick: "erHelper.zoom(-0.1)",
+      },
+      i({ class: "fas fa-search-minus" })
+    )
+  );
+
+const screenshotPanel = () =>
+  div(
+    { class: "er-screenshot-panel" },
+    button(
+      {
+        class: "btn btn-primary",
+        onclick: "erHelper.takePicture()",
+      },
+      i({ class: "fas fa-camera" })
+    )
+  );
+
 /**
  * Show Relational Diagram (get)
  * @name get/relationship-diagram
@@ -433,34 +533,43 @@ router.get(
   isAdmin,
   error_catcher(async (req, res) => {
     const tables = await Table.find_with_external({}, { orderBy: "name" });
-    const edges = [];
-    for (const table of tables) {
-      const fields = table.getFields();
-      for (const field of fields) {
-        if (field.reftable_name)
-          edges.push({
-            from: table.name,
-            to: field.reftable_name,
-            arrows: "to",
-          });
-      }
-    }
-    const data = {
-      nodes: tables.map((t) => ({
-        id: t.name,
-        label: `<b>${t.name}</b>\n${t.fields
-          .map((f) => `${f.name} : ${f.pretty_type}`)
-          .join("\n")}`,
-        title: t.description ? t.description : t.name,
-      })),
-      edges,
-    };
     res.sendWrap(
       {
         title: req.__("Tables"),
         headers: [
           {
-            script: `/static_assets/${db.connectObj.version_tag}/vis-network.min.js`,
+            script: `/static_assets/${db.connectObj.version_tag}/mermaid.min.js`,
+          },
+          {
+            headerTag: `
+            <script type="module">
+              mermaid.initialize({ 
+                startOnLoad: false,
+                securityLevel: 'loose',
+              });
+              await mermaid.run({
+                querySelector: ".mermaid",
+                postRenderCallback: (id) => {
+                  $("#" + id).css("height", "calc(100vh - 250px)");
+                  $("#" + id + " > g").each(function(index) {
+                    const jThis = $(this);
+                    const id = jThis.attr("id");
+                    if (id) {
+                      const arr = /^entity-(.+)-(\\w+-\\w+-\\w+-\\w+-\\w+$)/.exec(id);
+                      if (arr?.length === 3) {
+                        const textEnt = $("#text-entity-" + arr[1] + "-" + arr[2]);
+                        textEnt.css("cursor", "pointer");
+                        textEnt.on("click", function () {
+                          if (!erHelper.isTranslating()) {
+                            window.open("/table/" + encodeURIComponent(this.innerHTML));
+                          }
+                        });
+                      }
+                    }
+                  });
+                }
+              });
+            </script>`,
           },
         ],
       },
@@ -482,28 +591,31 @@ router.get(
               },
             ]),
             contents: [
-              div({ id: "erdvis" }),
+              div(
+                {
+                  id: "erd-wrapper",
+                  style: "height: calc(100vh - 250px);",
+                  class: "overflow-scroll position-relative",
+                },
+                screenshotPanel(),
+                pre(
+                  {
+                    class: "mermaid",
+                    style: "height: calc(100vh - 250px); color: transparent;",
+                  },
+                  buildMermaidMarkup(tables)
+                ),
+                navigationPanel()
+              ),
+              script({ src: "/relationship_diagram_utils.js" }),
               script(
                 domReady(`
-            var container = document.getElementById('erdvis');        
-            var data = ${JSON.stringify(data)};
-            var options = {
-              edges: {length: 250},
-              nodes: {
-                font: { align: 'left', multi: "html", size: 20 },
-                shape: "box"
-              },
-              physics: {
-                // Even though it's disabled the options still apply to network.stabilize().
-                enabled: false,
-                solver: "repulsion",
-                repulsion: {
-                  nodeDistance: 100 // Put more distance between the nodes.
-                }
-              }
-            };        
-            var network = new vis.Network(container, data, options);
-            network.stabilize();`)
+                  const erdWrapper = $("#erd-wrapper")[0];
+                  erdWrapper.onwheel = erHelper.onWheel;
+                  erdWrapper.onmousedown = erHelper.onMouseDown;
+                  erdWrapper.onmouseup = erHelper.onMouseUp;
+                  window.addEventListener("mousemove", erHelper.onMouseMove);
+                `)
               ),
             ],
           },
@@ -543,7 +655,14 @@ const attribBadges = (f) => {
   let s = "";
   if (f.attributes) {
     Object.entries(f.attributes).forEach(([k, v]) => {
-      if (["summary_field", "on_delete_cascade", "on_delete"].includes(k))
+      if (
+        [
+          "summary_field",
+          "on_delete_cascade",
+          "on_delete",
+          "unique_error_msg",
+        ].includes(k)
+      )
         return;
       if (v || v === 0) s += badge("secondary", k);
     });
@@ -674,37 +793,10 @@ router.get(
       );
       var viewCardContents;
       if (views.length > 0) {
-        viewCardContents = mkTable(
-          [
-            {
-              label: req.__("Name"),
-              key: (r) => link(`/view/${encodeURIComponent(r.name)}`, r.name),
-            },
-            { label: req.__("Pattern"), key: "viewtemplate" },
-            {
-              label: req.__("Configure"),
-              key: (r) =>
-                link(
-                  `/viewedit/config/${encodeURIComponent(
-                    r.name
-                  )}?on_done_redirect=${encodeURIComponent(
-                    `table/${table.name}`
-                  )}`,
-                  req.__("Configure")
-                ),
-            },
-            {
-              label: req.__("Delete"),
-              key: (r) =>
-                post_delete_btn(
-                  `/viewedit/delete/${encodeURIComponent(r.id)}`,
-                  req
-                ),
-            },
-          ],
-          views,
-          { hover: true }
-        );
+        viewCardContents = await viewsList(views, req, {
+          on_done_redirect: encodeURIComponent(`table/${table.name}`),
+          notable: true,
+        });
       } else {
         viewCardContents = div(
           h4(req.__("No views defined")),
@@ -727,6 +819,33 @@ router.get(
           ),
       };
     }
+    const models = await Model.find({ table_id: table.id });
+    const modelCard = div(
+      mkTable(
+        [
+          {
+            label: req.__("Name"),
+            key: (r) => link(`/models/show/${r.id}`, r.name),
+          },
+          { label: req.__("Pattern"), key: "modelpattern" },
+          {
+            label: req.__("Delete"),
+            key: (r) =>
+              post_delete_btn(
+                `/models/delete/${encodeURIComponent(r.id)}`,
+                req
+              ),
+          },
+        ],
+        models
+      ),
+      a(
+        { href: `/models/new/${table.id}`, class: "btn btn-primary" },
+        i({ class: "fas fa-plus-square me-1" }),
+        req.__("Create model")
+      )
+    );
+
     // Table Data card
     const dataCard = div(
       { class: "d-flex text-center" },
@@ -886,6 +1005,15 @@ router.get(
           titleAjaxIndicator: true,
           contents: renderForm(tblForm, req.csrfToken()),
         },
+        ...(Model.has_templates
+          ? [
+              {
+                type: "card",
+                title: req.__("Models"),
+                contents: modelCard,
+              },
+            ]
+          : []),
       ],
     });
   })
@@ -1278,11 +1406,19 @@ const constraintForm = (req, table_id, fields, type) => {
         blurb: req.__(
           "Tick the boxes for the fields that should be jointly unique"
         ),
-        fields: fields.map((f) => ({
-          name: f.name,
-          label: f.label,
-          type: "Bool",
-        })),
+        fields: [
+          ...fields.map((f) => ({
+            name: f.name,
+            label: f.label,
+            type: "Bool",
+          })),
+          {
+            name: "errormsg",
+            label: "Error message",
+            sublabel: "Shown the user if joint uniqueness is violated",
+            type: "String",
+          },
+        ],
       });
     case "Index":
       return new Form({
@@ -1374,11 +1510,12 @@ router.post(
     if (form.hasErrors) req.flash("error", req.__("An error occurred"));
     else {
       let configuration = {};
-      if (type === "Unique")
+      if (type === "Unique") {
         configuration.fields = fields
           .map((f) => f.name)
           .filter((f) => form.values[f]);
-      else configuration = form.values;
+        configuration.errormsg = form.values.errormsg;
+      } else configuration = form.values;
       await TableConstraint.create({
         table_id: table.id,
         type,
@@ -1762,7 +1899,7 @@ const get_provider_workflow = (table, req) => {
 
     return {
       redirect: `/table/${table.id}`,
-      flash: ["success", `Table ${this.name || ""} saved`],
+      flash: ["success", `Table ${table.name || ""} saved`],
     };
   };
   return workflow;

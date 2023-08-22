@@ -8,6 +8,7 @@ const Router = require("express-promise-router");
 
 const View = require("@saltcorn/data/models/view");
 const Table = require("@saltcorn/data/models/table");
+const Trigger = require("@saltcorn/data/models/trigger");
 
 const { text, style } = require("@saltcorn/markup/tags");
 const {
@@ -51,7 +52,7 @@ router.get(
       res.redirect("/");
       return;
     }
-    const tic = state.logLevel >= 5 ? new Date() : null;
+    const tic = new Date();
 
     view.rewrite_query_from_slug(query, req.params);
     if (
@@ -83,11 +84,16 @@ router.get(
       );
     if (isModal && view.attributes?.popup_save_indicator)
       res.set("SaltcornModalSaveIndicator", `true`);
-    if (tic) {
-      const tock = new Date();
-      const ms = tock.getTime() - tic.getTime();
-      state.log(5, `View ${viewname} rendered in ${ms} ms`);
-    }
+    if (isModal && view.attributes?.popup_link_out)
+      res.set("SaltcornModalLinkOut", `true`);
+    const tock = new Date();
+    const ms = tock.getTime() - tic.getTime();
+    Trigger.emitEvent("PageLoad", null, req.user, {
+      text: req.__("View '%s' was loaded", viewname),
+      type: "view",
+      name: viewname,
+      render_time: ms,
+    });
     if (typeof contents === "object" && contents.goto)
       res.redirect(contents.goto);
     else

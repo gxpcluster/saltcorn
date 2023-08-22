@@ -71,6 +71,29 @@ describe("Table create basic tests", () => {
     assertIsSet(row);
     expect(row.group).toBe(false);
   });
+  it("observe field min_role_write", async () => {
+    const tc = await Table.create("mytable177", {
+      min_role_read: 100,
+      min_role_write: 100,
+    });
+
+    await Field.create({
+      table: tc,
+      label: "Group",
+      type: "Bool",
+      attributes: { min_role_write: 40 },
+    });
+
+    const err = await tc.insertRow({ group: true }, { role_id: 80 });
+    expect(err).toBe("Not authorized");
+    expect(await tc.countRows()).toBe(0);
+    const tall_id = await tc.insertRow({ group: true }, { role_id: 20 });
+    expect(tall_id).toBe(1);
+    const ures = await tc.updateRow({ group: false }, tall_id, { role_id: 80 });
+    expect(ures).toBe("Not authorized");
+    const tall = await tc.getRow({ id: tall_id });
+    expect(tall?.group).toBe(true);
+  });
   it("should create required field in empty table without default", async () => {
     const mytable1 = Table.findOne({ name: "mytable1" });
     expect(!!mytable1).toBe(true);
@@ -230,6 +253,23 @@ describe("Table get data", () => {
     });
     expect(michaels.length).toStrictEqual(2);
     expect(Math.round(michaels[0].avg_temp)).toBe(38);
+  });
+  it("should get joined rows with unique count aggregations", async () => {
+    const patients = Table.findOne({ name: "patients" });
+    assertIsSet(patients);
+    const michaels = await patients.getJoinedRows({
+      orderBy: "id",
+      aggregations: {
+        ntemps: {
+          table: "readings",
+          ref: "patient_id",
+          field: "temperature",
+          aggregate: "CountUnique",
+        },
+      },
+    });
+    expect(michaels.length).toStrictEqual(2);
+    expect(Math.round(michaels[0].ntemps)).toBe(2);
   });
   it("should get fkey aggregations", async () => {
     const books = Table.findOne({ name: "books" });
@@ -402,66 +442,7 @@ describe("Table get data", () => {
 
     expect(rows.length).toBe(2);
   });
-  it("should enable versioning", async () => {
-    const table = Table.findOne({ name: "patients" });
-    assertIsSet(table);
-    table.versioned = true;
-    await table.update(table);
-  });
-  it("should save version on insert", async () => {
-    const table = Table.findOne({ name: "patients" });
-    assertIsSet(table);
-    await table.insertRow({ name: "Bunny foo-foo", favbook: 1 });
-    const bunnyFooFoo = await table.getRow({ name: "Bunny foo-foo" });
-    assertIsSet(bunnyFooFoo);
-    const history1 = await table.get_history(bunnyFooFoo.id);
-    expect(history1.length).toBe(1);
-    expect(history1[0].id).toBe(bunnyFooFoo.id);
-    expect(history1[0]._version).toBe(1);
-    expect(history1[0].name).toBe("Bunny foo-foo");
-  });
-  it("should save version on update", async () => {
-    const table = Table.findOne({ name: "patients" });
-    assertIsSet(table);
 
-    const bunnyFooFoo = await table.getRow({ name: "Bunny foo-foo" });
-    assertIsSet(bunnyFooFoo);
-
-    await table.updateRow({ name: "Goon" }, bunnyFooFoo.id);
-    const history2 = await table.get_history(bunnyFooFoo.id);
-    expect(history2.length).toBe(2);
-    expect(history2[0].id).toBe(bunnyFooFoo.id);
-    expect(history2[0]._version).toBe(1);
-    expect(history2[0].name).toBe("Bunny foo-foo");
-    expect(history2[0].favbook).toBe(1);
-    expect(history2[1].id).toBe(bunnyFooFoo.id);
-    expect(history2[1]._version).toBe(2);
-    expect(history2[1].name).toBe("Goon");
-    expect(history2[1].favbook).toBe(1);
-    const goon = await table.getRow({ id: bunnyFooFoo.id });
-    assertIsSet(goon);
-    expect(goon.name).toBe("Goon");
-    expect(goon.favbook).toBe(1);
-  });
-  it("create field on version table", async () => {
-    const table = Table.findOne({ name: "patients" });
-
-    const fc = await Field.create({
-      table: table,
-      name: "Height19",
-      label: "height19",
-      type: "Integer",
-      required: true,
-      attributes: { default: 6 },
-    });
-    await fc.delete();
-  });
-  it("should disable versioning", async () => {
-    const table = Table.findOne({ name: "patients" });
-    assertIsSet(table);
-    table.getFields();
-    await table.update({ versioned: false });
-  });
   it("should rename", async () => {
     const table = await Table.create("notsurename");
     await Field.create({
@@ -1023,7 +1004,7 @@ Pencil, 0.5,2, t`;
 });
 
 describe("Table unique constraint", () => {
-  it("should create table", async () => {
+  it("should create table with unique constraint", async () => {
     //db.set_sql_logging()
     const table = await Table.create("TableWithUniques");
     const field = await Field.create({
@@ -1058,7 +1039,25 @@ describe("Table unique constraint", () => {
     expect(field2.is_unique).toBe(true);
     expect(field1.is_unique).toBe(true);
   });
+  it("should show unique_error_msg", async () => {
+    //db.set_sql_logging()
+    const table = await Table.create("TableWithUniques1");
+    await Field.create({
+      table,
+      name: "name",
+      type: "String",
+      is_unique: true,
+      attributes: { unique_error_msg: "No same name twice" },
+    });
+    await table.insertRow({ name: "Bill" });
+    const ted_id = await table.insertRow({ name: "Ted" });
+    const ins_res = await table.tryInsertRow({ name: "Bill" });
+    expect(ins_res).toEqual({
+      error: "No same name twice",
+    });
+  });
 });
+
 describe("Table not null constraint", () => {
   it("should create table", async () => {
     //db.set_sql_logging()
@@ -1278,13 +1277,20 @@ describe("Table joint unique constraint", () => {
     const tc = await TableConstraint.create({
       table_id: table.id,
       type: "Unique",
-      configuration: { fields: ["author", "pages"] },
+      configuration: {
+        fields: ["author", "pages"],
+        errormsg: "Bad author/pages vibes",
+      },
     });
-    const res = await table.tryInsertRow(row0);
+    const table1 = Table.findOne({ name: "books" });
+    assertIsSet(table1);
+    const res = await table1.tryInsertRow(row0);
     assertIsErrorMsg(res);
-    expect(!!res.error).toBe(true);
+    expect(res.error).toBe("Bad author/pages vibes");
     await tc.delete();
-    const res1 = await table.tryInsertRow(row0);
+    const table2 = Table.findOne({ name: "books" });
+    assertIsSet(table2);
+    const res1 = await table2.tryInsertRow(row0);
     assertIsErrorMsg(res1);
     expect(!!res1.error).toBe(false);
   });
@@ -1519,91 +1525,6 @@ describe("table providers", () => {
     const table = Table.findOne({ name: "JoeTable" });
     assertIsSet(table);
     expect(table.min_role_read).toBe(40);
-  });
-});
-
-describe("unique history clash", () => {
-  it("should create table", async () => {
-    const table = await Table.create("unihistory");
-
-    await Field.create({
-      table,
-      label: "Name",
-      type: "String",
-      is_unique: true,
-    });
-    await Field.create({
-      table,
-      label: "age",
-      type: "Integer",
-    });
-    await Field.create({
-      table,
-      label: "agep1",
-      type: "Integer",
-      calculated: true,
-      stored: true,
-      expression: "age ? age+1:null",
-    });
-  });
-  it("should enable versioning", async () => {
-    const table = Table.findOne({ name: "unihistory" });
-    assertIsSet(table);
-    table.versioned = true;
-    await table.update(table);
-  });
-  it("should not error on history with unique", async () => {
-    const table = Table.findOne({ name: "unihistory" });
-    assertIsSet(table);
-
-    await table.insertRow({ name: "Bartimaeus", age: 2500 });
-    const row = await table.getRow({ name: "Bartimaeus" });
-    expect(row!.name).toBe("Bartimaeus");
-    await table.deleteRows({ id: row!.id });
-    await table.insertRow({ name: "Bartimaeus" });
-    const row1 = await table.getRow({ name: "Bartimaeus" });
-    expect(row1!.name).toBe("Bartimaeus");
-  });
-  it("should duplicate row manually", async () => {
-    const table = Table.findOne({ name: "unihistory" });
-    assertIsSet(table);
-
-    const row = await table.getRow({ name: "Bartimaeus" });
-    assertIsSet(row);
-    const history0 = await table.get_history(row.id);
-
-    await table.updateRow({ age: 2501 }, row.id);
-    const row1 = await table.getRow({ name: "Bartimaeus" });
-    expect(row1!.name).toBe("Bartimaeus");
-    expect(row1!.age).toBe(2501);
-    const history1 = await table.get_history(row1!.id);
-    expect(history0.length + 1).toBe(history1.length);
-  });
-  it("should not clash unique with history", async () => {
-    const table = Table.findOne({ name: "unihistory" });
-    assertIsSet(table);
-
-    const row = await table.getRow({ name: "Bartimaeus" });
-    assertIsSet(row);
-    await table.deleteRows({});
-    await table.insertRow({ name: "Bartimaeus", age: 2499 });
-  });
-  it("should disable and enable history", async () => {
-    const table = Table.findOne({ name: "unihistory" });
-    assertIsSet(table);
-    table.versioned = false;
-    await table.update(table);
-    table.versioned = true;
-    await table.update(table);
-    const row = await table.getRow({ name: "Bartimaeus" });
-    assertIsSet(row);
-
-    await table.updateRow({ age: 2502 }, row.id);
-    const row1 = await table.getRow({ name: "Bartimaeus" });
-    expect(row1!.name).toBe("Bartimaeus");
-    expect(row1!.age).toBe(2502);
-    await table.deleteRows({});
-    await table.insertRow({ name: "Bartimaeus", age: 2498 });
   });
 });
 

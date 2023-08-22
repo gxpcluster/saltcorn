@@ -34,6 +34,7 @@ const emergency_layout = require("@saltcorn/markup/emergency_layout");
 import utils from "../utils";
 const { structuredClone, removeAllWhiteSpace, stringToJSON } = utils;
 import I18n from "i18n";
+import { tz } from "moment-timezone";
 import { join } from "path";
 import { existsSync } from "fs";
 import { writeFile, mkdir } from "fs/promises";
@@ -101,6 +102,7 @@ class State {
   triggers: Array<Trigger>;
   virtual_triggers: Array<Trigger>;
   viewtemplates: Record<string, ViewTemplate>;
+  modelpatterns: Record<string, any>;
   tables: Array<Table>;
   types: Record<string, Type>;
   stashed_fieldviews: Record<string, any>;
@@ -141,6 +143,7 @@ class State {
     this.triggers = [];
     this.virtual_triggers = [];
     this.viewtemplates = {};
+    this.modelpatterns = {};
     this.tables = [];
     this.types = {};
     this.stashed_fieldviews = {};
@@ -360,6 +363,12 @@ class State {
       { orderBy: "name", nocase: true }
     );
     const allConstraints = await db.select("_sc_table_constraints", {});
+    const Model = require("../models/model");
+    let allModels = [];
+    try {
+      //needed for refresh in pre-model migration
+      allModels = await Model.find({});
+    } catch (e) {}
     for (const table of allTables) {
       if (table.provider_name) {
         table.provider_cfg = stringToJSON(table.provider_cfg);
@@ -395,8 +404,15 @@ class State {
           }
         }
       });
+      const models = allModels.filter((m: any) => m.table_id == table.id);
+      for (const model of models) {
+        const predictor_function = model.predictor_function;
+        this.functions[model.name] = { isAsync: true, run: predictor_function };
+        this.function_context[model.name] = predictor_function;
+      }
     }
     this.tables = allTables;
+
     if (!noSignal) this.log(5, "Refresh table");
 
     if (!noSignal && db.is_node)
@@ -421,6 +437,12 @@ class State {
       return this.configs[key].value;
     if (def) return def;
     else return configTypes[key] && configTypes[key].default;
+  }
+
+  get utcOffset() {
+    const tzName = this.getConfig("timezone");
+    if (!tzName) return 0;
+    return tz(tzName).utcOffset() / 60;
   }
 
   /**
@@ -513,6 +535,11 @@ class State {
       ([k, v]: [k: string, v: any]) => {
         this.functions[k] = v;
         this.function_context[k] = typeof v === "function" ? v : v.run;
+      }
+    );
+    Object.entries(withCfg("modelpatterns", {})).forEach(
+      ([k, v]: [k: string, v: any]) => {
+        this.modelpatterns[k] = v;
       }
     );
     Object.entries(withCfg("fileviews", {})).forEach(([k, v]) => {
@@ -612,6 +639,7 @@ class State {
    */
   async refresh_plugins(noSignal?: boolean) {
     this.viewtemplates = {};
+    this.modelpatterns = {};
     this.types = {};
     this.stashed_fieldviews = {};
     this.fields = [];
@@ -859,6 +887,7 @@ const features = {
   async_validate: true,
   public_user_role: 100,
   get_view_goto: true,
+  table_undo: true,
 };
 
 export = {

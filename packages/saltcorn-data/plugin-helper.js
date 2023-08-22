@@ -650,6 +650,7 @@ const field_picker_fields = async ({
   req,
   has_click_to_edit,
   has_align,
+  no_fieldviews,
 }) => {
   const __ = (...s) => (req ? req.__(...s) : s.join(""));
   const fields = table.getFields();
@@ -789,6 +790,7 @@ const field_picker_fields = async ({
         `${table.name}.${key_field.name}`;
       aggStatOptions[aggKey] = [
         "Count",
+        "CountUnique",
         "Avg",
         "Sum",
         "Max",
@@ -864,16 +866,20 @@ const field_picker_fields = async ({
       },
       showIf: { type: "Field" },
     },
-    {
-      name: "fieldview",
-      label: __("Field view"),
-      type: "String",
-      required: false,
-      attributes: {
-        calcOptions: ["field_name", field_view_options],
-      },
-      showIf: { type: "Field" },
-    },
+    ...(no_fieldviews
+      ? []
+      : [
+          {
+            name: "fieldview",
+            label: __("Field view"),
+            type: "String",
+            required: false,
+            attributes: {
+              calcOptions: ["field_name", field_view_options],
+            },
+            showIf: { type: "Field" },
+          },
+        ]),
 
     {
       name: "join_field",
@@ -1477,31 +1483,39 @@ const picked_fields_to_query = (columns, fields, layout) => {
  * @param {object}
  * @returns {object}
  */
-const stateFieldsToQuery = ({ state, stateHash, fields, prefix = "" }) => {
+const stateFieldsToQuery = ({
+  state,
+  stateHash,
+  fields,
+  prefix = "",
+  noSortAndPaging,
+}) => {
   let q = {};
-  const stateKeys = Object.keys(state);
-  const sortbyName = `_${stateHash}_sortby`;
-  const sortDescName = `_${stateHash}_sortdesc`;
-  if (state[sortbyName]) {
-    const field = fields.find((f) => f.name === state[sortbyName]);
-    //this is ok because it has to match fieldname
-    if (field) q.orderBy = state[sortbyName];
-    if (state[sortDescName]) q.orderDesc = true;
-  }
-  const pagesize =
-    stateHash && state[`_${stateHash}_pagesize`]
-      ? parseInt(state[`_${stateHash}_pagesize`])
-      : undefined;
-  if (pagesize) {
-    q.limit = parseInt(pagesize);
-    const page =
-      stateHash && state[`_${stateHash}_page`]
-        ? parseInt(state[`_${stateHash}_page`])
+  if (!noSortAndPaging) {
+    const sortbyName = `_${stateHash}_sortby`;
+    const sortDescName = `_${stateHash}_sortdesc`;
+    if (state[sortbyName]) {
+      const field = fields.find((f) => f.name === state[sortbyName]);
+      //this is ok because it has to match fieldname
+      if (field) q.orderBy = state[sortbyName];
+      if (state[sortDescName]) q.orderDesc = true;
+    }
+    const pagesize =
+      stateHash && state[`_${stateHash}_pagesize`]
+        ? parseInt(state[`_${stateHash}_pagesize`])
         : undefined;
-    if (page) {
-      q.offset = (page - 1) * pagesize;
+    if (pagesize) {
+      q.limit = parseInt(pagesize);
+      const page =
+        stateHash && state[`_${stateHash}_page`]
+          ? parseInt(state[`_${stateHash}_page`])
+          : undefined;
+      if (page) {
+        q.offset = (page - 1) * pagesize;
+      }
     }
   }
+  const stateKeys = Object.keys(state);
   const latNear = stateKeys.find((k) => k.startsWith("_near_lat_"));
   const longNear = stateKeys.find((k) => k.startsWith("_near_long_"));
   if (latNear && longNear) {

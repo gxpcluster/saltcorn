@@ -149,6 +149,8 @@ function pjax_to(href, e) {
       success: function (res, textStatus, request) {
         if (!inModal && !localizer.length)
           window.history.pushState({ url: href }, "", href);
+        if (inModal && !localizer.length)
+          $(".sc-modal-linkout").attr("href", href);
         setTimeout(() => {
           loadPage = true;
         }, 0);
@@ -193,8 +195,11 @@ function ajax_done(res) {
   common_done(res);
 }
 
-function view_post(viewname, route, data, onDone) {
-  $.ajax("/view/" + viewname + "/" + route, {
+function view_post(viewname, route, data, onDone, sendState) {
+  const query = sendState
+    ? `?${new URL(get_current_state_url()).searchParams.toString()}`
+    : "";
+  $.ajax("/view/" + viewname + "/" + route + query, {
     dataType: "json",
     type: "POST",
     headers: {
@@ -248,21 +253,27 @@ function close_saltcorn_modal() {
   var myModalEl = document.getElementById("scmodal");
   if (!myModalEl) return;
   var modal = bootstrap.Modal.getInstance(myModalEl);
-  if (modal) modal.dispose();
+  if (modal) {
+    if (modal.hide) modal.hide();
+    if (modal.dispose) modal.dispose();
+  }
 }
 
 function ensure_modal_exists_and_closed() {
   if ($("#scmodal").length === 0) {
-    $("body").append(`<div id="scmodal", class="modal">
+    $("body").append(`<div id="scmodal" class="modal">
     <div class="modal-dialog">
       <div class="modal-content">
         <div class="modal-header">
           <h5 class="modal-title">Modal title</h5>
-          <span class="sc-ajax-indicator-wrapper">
-            <span class="sc-ajax-indicator ms-2" style="display: none;"><i class="fas fa-save"></i></span>
-          </span>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close">            
-          </button>
+          <div class="">
+            <span class="sc-ajax-indicator-wrapper">
+              <span class="sc-ajax-indicator ms-2" style="display: none;"><i class="fas fa-save"></i></span>
+            </span>
+            <a class="sc-modal-linkout ms-2" onclick="close_saltcorn_modal()" href="" target="_blank"><i class="fas fa-expand-alt"></i></a>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close">            
+            </button>
+          </div>
         </div>
         <div class="modal-body">
           <p>Modal body text goes here.</p>
@@ -300,6 +311,9 @@ function ajax_modal(url, opts = {}) {
       );
       if (saveIndicate) $(".sc-ajax-indicator-wrapper").show();
       else $(".sc-ajax-indicator-wrapper").hide();
+      var linkOut = !!request.getResponseHeader("SaltcornModalLinkOut");
+      if (linkOut) $(".sc-modal-linkout").show().attr("href", url);
+      else $(".sc-modal-linkout").hide();
       if (width) $(".modal-dialog").css("max-width", width);
       else $(".modal-dialog").css("max-width", "");
       if (title) $("#scmodal .modal-title").html(decodeURIComponent(title));
